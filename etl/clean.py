@@ -1,56 +1,49 @@
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, r"D:\python-packages")
-
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import (
-    col, trim, regexp_replace, size, split, year, to_timestamp
-)
-
-Path(r"D:\spark-tmp").mkdir(parents=True, exist_ok=True)
+from pyspark.sql.functions import col, trim, regexp_replace, length, split
 
 spark = (
     SparkSession.builder
-    .appName("ArxivLens-ETL")
-    .master("local[*]")
-    .config("spark.sql.shuffle.partitions", "8")
-    .config("spark.local.dir", r"D:\spark-tmp")
+    .appName("ArxivLensDataCleaning")
     .getOrCreate()
 )
 
+# Step 1: Read raw JSON Lines data
 df = spark.read.json("data/raw/arxiv_raw.jsonl")
 
-print("Records before cleaning:", df.count())
+print("Original record count:", df.count())
 
+# Step 2: Remove extra spaces from text columns
+df = df.withColumn("title", trim(col("title")))
 df = df.withColumn(
-    "title",
-    trim(regexp_replace(col("title"), r"\s+", " "))
-).withColumn(
     "abstract",
     trim(regexp_replace(col("abstract"), r"\s+", " "))
 )
 
+# Step 3: Remove records with missing or empty abstracts
 df = df.filter(
-    col("abstract").isNotNull() & (col("abstract") != "")
+    col("abstract").isNotNull() &
+    (length(col("abstract")) > 0)
 )
 
+# Step 4: Remove duplicate papers by ID
 df = df.dropDuplicates(["id"])
 
+# Step 5: Calculate abstract word count
 df = df.withColumn(
     "word_count",
-    size(split(col("abstract"), r"\s+"))
-).withColumn(
-    "year",
-    year(to_timestamp(col("published")))
+    length(trim(col("abstract"))) -
+    length(regexp_replace(trim(col("abstract")), r"\s+", "")) + 1
 )
 
-print("Records after cleaning:", df.count())
+print("Cleaned record count:", df.count())
 
-output_path = "data/processed/papers.parquet"
-df.write.mode("overwrite").parquet(output_path)
+# Step 6: Preview cleaned data
+df.select("id", "title", "word_count").show(5, truncate=50)
 
-print("Cleaned data saved to:", output_path)
+# Step 7: Save cleaned data in Parquet format
+df.write.mode("overwrite").parquet("data/processed/arxiv_clean")
+
+print("Cleaning completed successfully!")
 
 spark.stop()
